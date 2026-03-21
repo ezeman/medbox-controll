@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
-from .models import BottleScan, Mission, RelayLog, Slot, SlotBatch
+from .models import BottleScan, Mission, RelayLog, RemovalLog, Slot, SlotBatch
 from .schemas import MessageResponse, MissionResponse, RelayOpenResponse, RobotConfig, ScanRequest, SlotSelectResponse, SlotView
 from .services import parse_qr
 
@@ -296,6 +296,52 @@ def delete_slot_item(slot_id: int, scan_id: int, db: Session = Depends(get_db)):
     return MessageResponse(message="deleted")
 
 
+@app.post("/api/slots/{slot_id}/scan-out", response_model=MessageResponse)
+def scan_out_from_slot(slot_id: int, body: ScanRequest, db: Session = Depends(get_db)):
+    slot = db.get(Slot, slot_id)
+    if not slot or not slot.current_batch_id:
+        raise HTTPException(status_code=404, detail="Slot or active batch not found")
+
+    batch = db.get(SlotBatch, slot.current_batch_id)
+    if not batch or batch.status in {"dispatched", "closed"}:
+        raise HTTPException(status_code=400, detail="Batch is not open for item removal")
+
+    parsed = parse_qr(body.qr_raw)
+    row = db.scalar(
+        select(BottleScan).where(
+            BottleScan.batch_id == slot.current_batch_id,
+            BottleScan.item_id == parsed.item_id,
+        )
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Scanned item not found in this slot")
+
+    db.add(
+        RemovalLog(
+            slot_id=slot.id,
+            batch_id=row.batch_id,
+            item_id=row.item_id,
+            drug_code=row.drug_code,
+            hn=row.hn,
+            station_code=row.station_code,
+            removed_by="scan",
+        )
+    )
+    db.delete(row)
+    db.flush()
+
+    remaining = db.scalar(select(func.count(BottleScan.id)).where(BottleScan.batch_id == slot.current_batch_id))
+    if not remaining:
+        slot.status = "selected"
+        if batch:
+            batch.status = "selected"
+            batch.station_code = None
+        slot.station_code = None
+
+    db.commit()
+    return MessageResponse(message=f"removed:{parsed.item_id}")
+
+
 @app.post("/api/slots/{slot_id}/start-mission", response_model=MissionResponse)
 def start_mission(slot_id: int, db: Session = Depends(get_db)):
     slot = db.get(Slot, slot_id)
@@ -428,6 +474,32 @@ def get_mission_history(limit: int = 100, db: Session = Depends(get_db)):
     ]
 
 
+@app.get("/api/history/removals")
+def get_removal_history(limit: int = 100, db: Session = Depends(get_db)):
+    safe_limit = min(max(limit, 1), 1000)
+    rows = (
+        db.query(RemovalLog)
+        .order_by(RemovalLog.removed_at.desc())
+        .limit(safe_limit)
+        .all()
+    )
+
+    return [
+        {
+            "id": row.id,
+            "slot_id": row.slot_id,
+            "batch_id": row.batch_id,
+            "item_id": row.item_id,
+            "drug_code": row.drug_code,
+            "hn": row.hn,
+            "station_code": row.station_code,
+            "removed_by": row.removed_by,
+            "removed_at": row.removed_at,
+        }
+        for row in rows
+    ]
+
+
 @app.get("/api/history/export/scans.csv")
 def export_scan_history_csv(db: Session = Depends(get_db)):
     rows = (
@@ -479,4 +551,29 @@ def export_mission_history_csv(db: Session = Depends(get_db)):
 
     buffer.seek(0)
     headers = {"Content-Disposition": 'attachment; filename="mission_history.csv"'}
+    return StreamingResponse(buffer, media_type="text/csv", headers=headers)
+
+
+@app.get("/api/history/export/removals.csv")
+def export_removal_history_csv(db: Session = Depends(get_db)):
+    rows = db.query(RemovalLog).order_by(RemovalLog.removed_at.desc()).all()
+
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["id", "slot_id", "batch_id", "item_id", "drug_code", "hn", "station_code", "removed_by", "removed_at"])
+    for row in rows:
+        writer.writerow([
+            row.id,
+            row.slot_id,
+            row.batch_id,
+            row.item_id,
+            row.drug_code,
+            row.hn,
+            row.station_code,
+            row.removed_by,
+            row.removed_at.isoformat(),
+        ])
+
+    buffer.seek(0)
+    headers = {"Content-Disposition": 'attachment; filename="removal_history.csv"'}
     return StreamingResponse(buffer, media_type="text/csv", headers=headers)

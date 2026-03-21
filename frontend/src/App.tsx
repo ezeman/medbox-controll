@@ -46,12 +46,25 @@ type MissionHistoryRow = {
   created_at: string;
 };
 
+type RemovalHistoryRow = {
+  id: number;
+  slot_id: number;
+  batch_id: number;
+  item_id: string;
+  drug_code: string;
+  hn: string;
+  station_code: string;
+  removed_by: string;
+  removed_at: string;
+};
+
 type RobotConfig = {
   robot_ip: string | null;
   robot_api_url: string | null;
 };
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+const RAW_API_BASE = import.meta.env.VITE_API_BASE || "";
+const API_BASE = RAW_API_BASE.endsWith("/") ? RAW_API_BASE.slice(0, -1) : RAW_API_BASE;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -76,11 +89,13 @@ export function App() {
   const [items, setItems] = useState<ScanItem[]>([]);
   const [scanHistory, setScanHistory] = useState<ScanHistoryRow[]>([]);
   const [missionHistory, setMissionHistory] = useState<MissionHistoryRow[]>([]);
+  const [removalHistory, setRemovalHistory] = useState<RemovalHistoryRow[]>([]);
   const [showRobotConfig, setShowRobotConfig] = useState(false);
   const [robotIp, setRobotIp] = useState("");
   const [robotApiUrl, setRobotApiUrl] = useState("");
   const [configBusy, setConfigBusy] = useState(false);
   const [scanRaw, setScanRaw] = useState("");
+  const [scanOutRaw, setScanOutRaw] = useState("");
   const [message, setMessage] = useState("Ready");
   const [busy, setBusy] = useState(false);
   const scanInputRef = useRef<HTMLInputElement | null>(null);
@@ -101,12 +116,14 @@ export function App() {
   };
 
   const reloadHistory = async () => {
-    const [scans, missions] = await Promise.all([
+    const [scans, missions, removals] = await Promise.all([
       api<ScanHistoryRow[]>("/api/history/scans?limit=30"),
       api<MissionHistoryRow[]>("/api/history/missions?limit=30"),
+      api<RemovalHistoryRow[]>("/api/history/removals?limit=30"),
     ]);
     setScanHistory(scans);
     setMissionHistory(missions);
+    setRemovalHistory(removals);
   };
 
   const reloadRobotConfig = async () => {
@@ -185,6 +202,34 @@ export function App() {
       });
       await Promise.all([reloadSlots(), reloadHistory()]);
       setMessage(`Mission ${result.mission_id} started for ${result.station_code}`);
+    } catch (error) {
+      setMessage((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onScanOutSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!selectedSlot) {
+      setMessage("Select slot first");
+      return;
+    }
+
+    if (!scanOutRaw.trim()) {
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const result = await api<{ message: string }>(`/api/slots/${selectedSlot}/scan-out`, {
+        method: "POST",
+        body: JSON.stringify({ qr_raw: scanOutRaw.trim() }),
+      });
+      setScanOutRaw("");
+      await Promise.all([reloadSlots(), reloadItems(selectedSlot), reloadHistory()]);
+      setMessage(`Removed ${result.message.replace("removed:", "")}`);
+      scanInputRef.current?.focus();
     } catch (error) {
       setMessage((error as Error).message);
     } finally {
@@ -361,6 +406,16 @@ export function App() {
               <button type="submit" disabled={!selectedSlot || busy}>Scan Into Slot</button>
             </form>
 
+            <form onSubmit={onScanOutSubmit}>
+              <input
+                value={scanOutRaw}
+                onChange={(event) => setScanOutRaw(event.target.value)}
+                placeholder="Scan QR to remove item from selected slot"
+                disabled={!selectedSlot || busy}
+              />
+              <button type="submit" disabled={!selectedSlot || busy}>Scan Out From Slot</button>
+            </form>
+
             <div className="actions">
               <button onClick={onStartMission} disabled={!selectedSlot || busy || items.length === 0}>
                 Start Mission
@@ -403,6 +458,9 @@ export function App() {
             </a>
             <a className="link-button" href={`${API_BASE}/api/history/export/missions.csv`} target="_blank" rel="noreferrer">
               Export Missions CSV
+            </a>
+            <a className="link-button" href={`${API_BASE}/api/history/export/removals.csv`} target="_blank" rel="noreferrer">
+              Export Removals CSV
             </a>
           </div>
         </div>
@@ -463,6 +521,35 @@ export function App() {
                 </tbody>
               </table>
               {missionHistory.length === 0 && <p>No mission history.</p>}
+            </div>
+          </div>
+
+          <div className="history-card">
+            <h3>Recent Removals</h3>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Slot</th>
+                    <th>Item</th>
+                    <th>Station</th>
+                    <th>Removed By</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {removalHistory.map((row) => (
+                    <tr key={row.id}>
+                      <td>{new Date(row.removed_at).toLocaleString()}</td>
+                      <td>{row.slot_id}</td>
+                      <td>{row.item_id}</td>
+                      <td>{row.station_code}</td>
+                      <td>{row.removed_by}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {removalHistory.length === 0 && <p>No removal history.</p>}
             </div>
           </div>
         </div>

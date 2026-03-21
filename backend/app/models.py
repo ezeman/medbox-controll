@@ -54,6 +54,20 @@ class BottleScan(Base):
     __table_args__ = (UniqueConstraint("batch_id", "item_id", name="uq_batch_item"),)
 
 
+class RemovalLog(Base):
+    __tablename__ = "removal_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slot_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    batch_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    item_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    drug_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    hn: Mapped[str] = mapped_column(String(64), nullable=False)
+    station_code: Mapped[str] = mapped_column(String(16), nullable=False)
+    removed_by: Mapped[str] = mapped_column(String(32), default="scan")
+    removed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Mission(Base):
     __tablename__ = "missions"
 

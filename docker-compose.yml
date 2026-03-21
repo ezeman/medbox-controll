@@ -1,42 +1,66 @@
 services:
   db:
-    image: postgres:16
-    container_name: medbot-db
+    image: postgres:16-alpine
+    container_name: medbox-db
     environment:
-      POSTGRES_DB: medbot
-      POSTGRES_USER: medbot
-      POSTGRES_PASSWORD: medbot
+      POSTGRES_DB: ${POSTGRES_DB:-medbox}
+      POSTGRES_USER: ${POSTGRES_USER:-medbox}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-medbox123}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-medbox} -d ${POSTGRES_DB:-medbox}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: medbox-pgadmin
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@medbox.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin123}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "5050:80"
+    restart: unless-stopped
 
   backend:
     build:
       context: ./backend
-    container_name: medbot-api
+    container_name: medbox-backend
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+psycopg2://medbot:medbot@db:5432/medbot
-      ROBOT_API_URL: ""
-      RELAY_API_URL: ""
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-medbox}:${POSTGRES_PASSWORD:-medbox123}@db:5432/${POSTGRES_DB:-medbox}
+      RELAY_API_URL: ${RELAY_API_URL:-}
+      ROBOT_API_URL: ${ROBOT_API_URL:-}
+      ROBOT_IP: ${ROBOT_IP:-}
     ports:
       - "8000:8000"
+    restart: unless-stopped
 
   frontend:
-    image: node:20
-    container_name: medbot-web
-    working_dir: /app
-    volumes:
-      - ./frontend:/app
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
-    environment:
-      VITE_API_BASE: http://localhost:8000
-    ports:
-      - "5173:5173"
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE: ""
+    container_name: medbox-frontend
     depends_on:
       - backend
+    ports:
+      - "5173:80"
+    restart: unless-stopped
 
 volumes:
-  pgdata:
+  postgres_data:
+  pgadmin_data:

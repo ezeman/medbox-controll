@@ -38,7 +38,45 @@ docker compose up --build
 
 Then open:
 - Frontend: http://localhost:5173
-- Backend docs: http://localhost:8000/docs
+- Backend API (direct): http://localhost:8000
+- Backend docs (direct): http://localhost:8000/docs
+- pgAdmin: http://localhost:5050
+
+Notes:
+- Frontend runs in its own container (nginx) and proxies `/api/*` and `/health` to backend.
+- Backend runs in its own container (FastAPI + uvicorn).
+- Database runs in its own PostgreSQL container (`db`).
+- PostgreSQL data is persisted in Docker volume (`postgres_data`).
+- pgAdmin runs in its own container for database management.
+
+Environment setup (optional):
+
+```bash
+cp .env.example .env
+```
+
+Default database connection in Docker:
+
+```text
+postgresql+psycopg2://medbox:medbox123@db:5432/medbox
+```
+
+pgAdmin default login:
+
+```text
+email: admin@medbox.com
+password: admin123
+```
+
+Add PostgreSQL server in pgAdmin:
+
+```text
+Host: db
+Port: 5432
+Username: medbox
+Password: medbox123
+Database: medbox
+```
 
 ## Local Run (Without Docker)
 
@@ -69,6 +107,8 @@ Set optional API base URL:
 VITE_API_BASE=http://localhost:8000
 ```
 
+If `VITE_API_BASE` is empty, frontend uses same-origin requests (`/api/...`), which is the default Docker behavior.
+
 ## Key API Endpoints
 
 - `GET /api/slots`
@@ -76,10 +116,33 @@ VITE_API_BASE=http://localhost:8000
 - `POST /api/slots/{slot_id}/open`
 - `POST /api/slots/open-empty`
 - `POST /api/slots/{slot_id}/scan`
+- `POST /api/slots/{slot_id}/scan-out`
 - `GET /api/slots/{slot_id}/items`
 - `DELETE /api/slots/{slot_id}/items/{scan_id}`
 - `POST /api/slots/{slot_id}/start-mission`
 - `POST /api/slots/{slot_id}/reopen`
+- `GET /api/history/removals`
+- `GET /api/history/export/removals.csv`
+
+## Seed Data (Demo)
+
+Run demo seed data into current database:
+
+```bash
+docker compose exec backend python -m app.seed_data
+```
+
+For local backend (without Docker):
+
+```bash
+cd backend
+python -m app.seed_data
+```
+
+Behavior:
+- Ensures slots `1..8` exist.
+- Inserts demo batch/items/mission/log if there is no scan data yet.
+- Skips seeding when `bottle_scans` already contains data.
 
 ## Relay and Robot Integration
 
