@@ -8,19 +8,25 @@ Web app + API for medication bottle slotting workflow:
 
 ## QR Field Index Mapping
 
-The backend parser uses fixed index mapping:
-- `0`: item_id
-- `1`: patient_name
-- `2`: drug_code
-- `5`: strength
-- `6`: qty
-- `9`: rate
-- `13`: diluent
-- `14`: administration
-- `15`: order_date
-- `16`: hn
-- `17`: station_code (format `S###`)
-- `18`: bed_no
+The backend parser first removes field `1` when it contains scanner timestamp/noise
+such as time/date text from the device. After that cleanup, the parser uses this mapping:
+- `0`: barcode number
+- `1`: drug name
+- `4`: drug strength
+- `5`: drug amount
+- `12`: diluent
+- `13`: administration
+- `14`: drug produce date (ISO, e.g. `2026-01-30`)
+- `15`: hospital number (HN)
+- `16`: destination code (format `S###`)
+
+Optional fields still accepted when present:
+- `8`: rate
+- `17`: bed_no
+
+Normalization rules:
+- HN is uppercased before storing (e.g. `hn6200079` -> `HN6200079`).
+- Destination code is uppercased before validation/storage (e.g. `s049` -> `S049`).
 
 Supported delimiters: tab, `|`, `;`, `,` (in that priority).
 

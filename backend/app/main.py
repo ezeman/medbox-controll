@@ -54,18 +54,38 @@ def send_relay_open(slot_id: int) -> tuple[str, str | None]:
         return "failed", str(exc)
 
 
+def set_empty_if_batch_has_no_items(slot: Slot, batch: SlotBatch | None, db: Session) -> None:
+    if not batch:
+        slot.current_batch_id = None
+        slot.status = "empty"
+        slot.station_code = None
+        return
+
+    # Dispatched/closed batches are historical records and should not be auto-reset.
+    if batch.status in {"dispatched", "closed"}:
+        return
+
+    item_count = db.scalar(select(func.count(BottleScan.id)).where(BottleScan.batch_id == batch.id)) or 0
+    if item_count == 0:
+        batch.status = "empty"
+        batch.station_code = None
+        slot.status = "empty"
+        slot.station_code = None
+
+
 def ensure_active_batch(slot: Slot, db: Session) -> SlotBatch:
     if slot.current_batch_id:
         existing = db.get(SlotBatch, slot.current_batch_id)
-        if existing and existing.status in {"selected", "loading", "ready"}:
+        set_empty_if_batch_has_no_items(slot, existing, db)
+        if existing and existing.status in {"empty", "selected", "loading", "ready"}:
             return existing
 
-    batch = SlotBatch(slot_id=slot.id, status="selected", station_code=None)
+    batch = SlotBatch(slot_id=slot.id, status="empty", station_code=None)
     db.add(batch)
     db.flush()
 
     slot.current_batch_id = batch.id
-    slot.status = "selected"
+    slot.status = "empty"
     slot.station_code = None
     return batch
 
@@ -119,6 +139,12 @@ def set_robot_config(body: RobotConfig):
 @app.get("/api/slots", response_model=list[SlotView])
 def get_slots(db: Session = Depends(get_db)):
     ensure_default_slots(db)
+    # Normalize stale slot states before presenting dashboard statuses.
+    for slot in db.query(Slot).all():
+        if slot.current_batch_id:
+            set_empty_if_batch_has_no_items(slot, db.get(SlotBatch, slot.current_batch_id), db)
+    db.commit()
+
     rows = (
         db.query(
             Slot.id,
@@ -285,10 +311,10 @@ def delete_slot_item(slot_id: int, scan_id: int, db: Session = Depends(get_db)):
 
     remaining = db.scalar(select(func.count(BottleScan.id)).where(BottleScan.batch_id == slot.current_batch_id))
     if not remaining:
-        slot.status = "selected"
+        slot.status = "empty"
         batch = db.get(SlotBatch, slot.current_batch_id)
         if batch:
-            batch.status = "selected"
+            batch.status = "empty"
             batch.station_code = None
         slot.station_code = None
 
@@ -332,9 +358,9 @@ def scan_out_from_slot(slot_id: int, body: ScanRequest, db: Session = Depends(ge
 
     remaining = db.scalar(select(func.count(BottleScan.id)).where(BottleScan.batch_id == slot.current_batch_id))
     if not remaining:
-        slot.status = "selected"
+        slot.status = "empty"
         if batch:
-            batch.status = "selected"
+            batch.status = "empty"
             batch.station_code = None
         slot.station_code = None
 
@@ -408,12 +434,12 @@ def reopen_slot(slot_id: int, db: Session = Depends(get_db)):
     if not slot:
         raise HTTPException(status_code=404, detail="Slot not found")
 
-    batch = SlotBatch(slot_id=slot.id, status="selected", station_code=None)
+    batch = SlotBatch(slot_id=slot.id, status="empty", station_code=None)
     db.add(batch)
     db.flush()
 
     slot.current_batch_id = batch.id
-    slot.status = "selected"
+    slot.status = "empty"
     slot.station_code = None
 
     db.commit()

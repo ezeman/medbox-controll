@@ -15,7 +15,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    restart: unless-stopped
+    restart: always
 
   pgadmin:
     image: dpage/pgadmin4:8
@@ -31,7 +31,7 @@ services:
       - pgadmin_data:/var/lib/pgadmin
     ports:
       - "5050:80"
-    restart: unless-stopped
+    restart: always
 
   backend:
     build:
@@ -47,7 +47,7 @@ services:
       ROBOT_IP: ${ROBOT_IP:-}
     ports:
       - "8000:8000"
-    restart: unless-stopped
+    restart: always
 
   frontend:
     build:
@@ -59,7 +59,7 @@ services:
       - backend
     ports:
       - "5173:80"
-    restart: unless-stopped
+    restart: always
 
 volumes:
   postgres_data:

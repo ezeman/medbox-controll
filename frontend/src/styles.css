@@ -31,6 +31,10 @@ body {
   padding: 24px;
 }
 
+.tab-content {
+  margin-top: 16px;
+}
+
 header {
   border: 1px solid var(--border);
   background: linear-gradient(145deg, #162542 0%, #101c34 100%);
@@ -45,11 +49,35 @@ header h1 {
   letter-spacing: 0.01em;
 }
 
+.header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .header-main {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+}
+
+.kiosk-tabs {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.tab-button {
+  min-width: 110px;
+  min-height: 34px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.tab-button.active {
+  box-shadow: 0 0 0 2px rgba(0, 184, 255, 0.35), 0 10px 24px rgba(0, 184, 255, 0.3);
 }
 
 .header-config-button {
@@ -102,11 +130,16 @@ header p {
 }
 
 .work-area {
-  margin-top: 16px;
   display: grid;
   grid-template-columns: max-content minmax(420px, 1fr);
   gap: 16px;
   align-items: stretch;
+}
+
+.settings-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
 }
 
 .work-side {
@@ -185,6 +218,26 @@ header p {
   height: 100%;
 }
 
+.scanner-help {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.scanner-box {
+  margin-bottom: 10px;
+}
+
+.scanner-box textarea {
+  min-height: 0;
+}
+
+.scan-out-row {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .items-card {
   height: 100%;
 }
@@ -197,6 +250,11 @@ textarea {
   border-radius: 8px;
   padding: 10px;
   background: var(--surface-muted);
+}
+
+textarea {
+  min-height: 96px;
+  resize: vertical;
 }
 
 input:focus,
@@ -246,13 +304,12 @@ button:disabled {
 }
 
 .status {
-  margin-top: 10px;
+  margin-top: 12px;
   font-weight: 600;
   color: var(--ok);
 }
 
 .history-panel {
-  margin-top: 20px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -342,11 +399,28 @@ li {
     flex-direction: column;
   }
 
+  .header-top {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .kiosk-tabs {
+    width: 100%;
+  }
+
+  .tab-button {
+    flex: 1 1 100%;
+  }
+
   .robot-config-form {
     grid-template-columns: 1fr;
   }
 
   .work-area {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-panel {
     grid-template-columns: 1fr;
   }
 

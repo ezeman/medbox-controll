@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Scanner Test</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b1324;
+        --panel: #121c30;
+        --panel-2: #172742;
+        --border: #2f446c;
+        --text: #edf3ff;
+        --muted: #9fb4d6;
+        --brand: #00b8ff;
+        --ok: #36d399;
+        --warn: #fbbf24;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Sarabun", "Noto Sans Thai", sans-serif;
+        background: radial-gradient(circle at 14% -12%, #203154 0%, #121d33 45%, #0b1324 100%);
+        color: var(--text);
+      }
+
+      main {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      .panel {
+        border: 1px solid var(--border);
+        background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+        border-radius: 16px;
+        padding: 18px;
+        box-shadow: 0 18px 40px rgba(2, 8, 20, 0.42);
+      }
+
+      h1,
+      h2 {
+        margin: 0 0 12px;
+      }
+
+      p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .stack {
+        display: grid;
+        gap: 16px;
+      }
+
+      .actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 16px;
+      }
+
+      button {
+        border: none;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font: inherit;
+        font-weight: 700;
+        color: #061120;
+        background: linear-gradient(180deg, var(--brand) 0%, #0090cc 100%);
+        cursor: pointer;
+      }
+
+      textarea,
+      input {
+        width: 100%;
+        border: 1px solid #39517f;
+        border-radius: 10px;
+        padding: 12px;
+        font: inherit;
+        color: var(--text);
+        background: rgba(12, 21, 39, 0.88);
+      }
+
+      textarea {
+        min-height: 180px;
+        resize: vertical;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1.3fr 0.9fr;
+        gap: 16px;
+      }
+
+      .stats {
+        display: grid;
+        gap: 8px;
+      }
+
+      .stat {
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: rgba(8, 18, 36, 0.5);
+      }
+
+      .label {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+
+      .value {
+        font-size: 15px;
+        font-weight: 700;
+        word-break: break-word;
+      }
+
+      .armed {
+        color: var(--ok);
+      }
+
+      .idle {
+        color: var(--warn);
+      }
+
+      .log {
+        min-height: 220px;
+        font-family: "Fira Code", monospace;
+        font-size: 13px;
+      }
+
+      @media (max-width: 860px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="stack">
+        <section class="panel">
+          <h1>Scanner Test Page</h1>
+          <p>Use this page to test the scanner directly in the kiosk browser without the main app flow.</p>
+          <div class="actions">
+            <button id="focusBtn" type="button">Focus Textarea</button>
+            <button id="clearBtn" type="button">Clear</button>
+            <button id="toggleBtn" type="button">Pause Capture</button>
+          </div>
+        </section>
+
+        <section class="grid">
+          <div class="panel">
+            <h2>Scanner Buffer</h2>
+            <textarea id="scannerBox" readonly placeholder="Click Focus Textarea, then scan here."></textarea>
+            <div class="actions">
+              <input id="manualInput" placeholder="Optional manual typing test" />
+            </div>
+          </div>
+
+          <div class="panel stats">
+            <div class="stat">
+              <span class="label">Capture State</span>
+              <span class="value armed" id="armedState">ARMED</span>
+            </div>
+            <div class="stat">
+              <span class="label">Window Keydown</span>
+              <span class="value" id="windowKeydown">0</span>
+            </div>
+            <div class="stat">
+              <span class="label">Textarea Keydown</span>
+              <span class="value" id="textareaKeydown">0</span>
+            </div>
+            <div class="stat">
+              <span class="label">Textarea Input</span>
+              <span class="value" id="textareaInput">0</span>
+            </div>
+            <div class="stat">
+              <span class="label">Focus / Blur</span>
+              <span class="value" id="focusBlur">0 / 0</span>
+            </div>
+            <div class="stat">
+              <span class="label">Last Key</span>
+              <span class="value" id="lastKey">-</span>
+            </div>
+            <div class="stat">
+              <span class="label">Last Target</span>
+              <span class="value" id="lastTarget">-</span>
+            </div>
+            <div class="stat">
+              <span class="label">Active Element</span>
+              <span class="value" id="activeElement">-</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Event Log</h2>
+          <textarea id="eventLog" class="log" readonly></textarea>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      const scannerBox = document.getElementById("scannerBox");
+      const manualInput = document.getElementById("manualInput");
+      const eventLog = document.getElementById("eventLog");
+      const focusBtn = document.getElementById("focusBtn");
+      const clearBtn = document.getElementById("clearBtn");
+      const toggleBtn = document.getElementById("toggleBtn");
+      const armedState = document.getElementById("armedState");
+      const windowKeydown = document.getElementById("windowKeydown");
+      const textareaKeydown = document.getElementById("textareaKeydown");
+      const textareaInput = document.getElementById("textareaInput");
+      const focusBlur = document.getElementById("focusBlur");
+      const lastKey = document.getElementById("lastKey");
+      const lastTarget = document.getElementById("lastTarget");
+      const activeElement = document.getElementById("activeElement");
+
+      const state = {
+        armed: true,
+        windowKeydown: 0,
+        textareaKeydown: 0,
+        textareaInput: 0,
+        focusCount: 0,
+        blurCount: 0,
+        buffer: "",
+        logLines: [],
+      };
+
+      function describeElement(element) {
+        if (!element) {
+          return "none";
+        }
+        const tagName = element.tagName.toLowerCase();
+        const className = typeof element.className === "string" ? element.className.trim().split(/\s+/).filter(Boolean)[0] : "";
+        return className ? `${tagName}.${className}` : tagName;
+      }
+
+      function render() {
+        scannerBox.value = state.buffer;
+        armedState.textContent = state.armed ? "ARMED" : "PAUSED";
+        armedState.className = `value ${state.armed ? "armed" : "idle"}`;
+        windowKeydown.textContent = String(state.windowKeydown);
+        textareaKeydown.textContent = String(state.textareaKeydown);
+        textareaInput.textContent = String(state.textareaInput);
+        focusBlur.textContent = `${state.focusCount} / ${state.blurCount}`;
+        activeElement.textContent = describeElement(document.activeElement);
+        eventLog.value = state.logLines.join("\n");
+      }
+
+      function appendBuffer(chunk) {
+        state.buffer += chunk;
+        render();
+      }
+
+      function trimBuffer() {
+        state.buffer = state.buffer.slice(0, -1);
+        render();
+      }
+
+      function pushLog(message) {
+        const timestamp = new Date().toLocaleTimeString();
+        state.logLines.unshift(`[${timestamp}] ${message}`);
+        state.logLines = state.logLines.slice(0, 40);
+        render();
+      }
+
+      focusBtn.addEventListener("click", () => {
+        scannerBox.focus();
+        pushLog("Focus button pressed");
+      });
+
+      clearBtn.addEventListener("click", () => {
+        state.buffer = "";
+        manualInput.value = "";
+        state.windowKeydown = 0;
+        state.textareaKeydown = 0;
+        state.textareaInput = 0;
+        state.focusCount = 0;
+        state.blurCount = 0;
+        state.logLines = [];
+        lastKey.textContent = "-";
+        lastTarget.textContent = "-";
+        render();
+        scannerBox.focus();
+      });
+
+      toggleBtn.addEventListener("click", () => {
+        state.armed = !state.armed;
+        toggleBtn.textContent = state.armed ? "Pause Capture" : "Resume Capture";
+        pushLog(`Capture ${state.armed ? "resumed" : "paused"}`);
+      });
+
+      scannerBox.addEventListener("focus", () => {
+        state.focusCount += 1;
+        pushLog("Textarea focused");
+      });
+
+      scannerBox.addEventListener("blur", () => {
+        state.blurCount += 1;
+        pushLog("Textarea blurred");
+      });
+
+      scannerBox.addEventListener("keydown", (event) => {
+        state.textareaKeydown += 1;
+        lastKey.textContent = event.key;
+        lastTarget.textContent = describeElement(event.target);
+        pushLog(`Textarea keydown: ${event.key}`);
+        event.preventDefault();
+      });
+
+      scannerBox.addEventListener("input", () => {
+        state.textareaInput += 1;
+        pushLog(`Textarea input length=${scannerBox.value.length}`);
+      });
+
+      window.addEventListener(
+        "keydown",
+        (event) => {
+          state.windowKeydown += 1;
+          lastKey.textContent = event.key;
+          lastTarget.textContent = describeElement(event.target);
+
+          if (!state.armed) {
+            render();
+            return;
+          }
+
+          if (document.activeElement === manualInput) {
+            render();
+            return;
+          }
+
+          if (event.ctrlKey || event.metaKey || event.altKey) {
+            render();
+            return;
+          }
+
+          const isPrintable = event.key.length === 1;
+          const isBackspace = event.key === "Backspace";
+          const isEnter = event.key === "Enter";
+          const isTab = event.key === "Tab";
+
+          if (isPrintable) {
+            appendBuffer(event.key);
+            event.preventDefault();
+            pushLog(`Window capture append: ${event.key}`);
+            scannerBox.focus();
+            return;
+          }
+
+          if (isBackspace) {
+            trimBuffer();
+            event.preventDefault();
+            pushLog("Window capture backspace");
+            scannerBox.focus();
+            return;
+          }
+
+          if (isEnter) {
+            appendBuffer("\n");
+            event.preventDefault();
+            pushLog("Window capture enter");
+            scannerBox.focus();
+            return;
+          }
+
+          if (isTab) {
+            appendBuffer("\t");
+            event.preventDefault();
+            pushLog("Window capture tab appended");
+            scannerBox.focus();
+            return;
+          }
+
+          render();
+        },
+        true
+      );
+
+      render();
+      scannerBox.focus();
+    </script>
+  </body>
+</html>

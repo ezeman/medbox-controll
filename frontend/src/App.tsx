@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Slot = {
   id: number;
@@ -63,8 +63,13 @@ type RobotConfig = {
   robot_api_url: string | null;
 };
 
+type KioskTab = "operation" | "history" | "settings";
+
 const RAW_API_BASE = import.meta.env.VITE_API_BASE || "";
 const API_BASE = RAW_API_BASE.endsWith("/") ? RAW_API_BASE.slice(0, -1) : RAW_API_BASE;
+const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]|\u001bO./g;
+const DISALLOWED_CONTROL_PATTERN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
+const AUTO_SEND_IDLE_MS = 350;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -83,6 +88,43 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json();
 }
 
+function ajax<T>(path: string, method: string, body?: unknown): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open(method, `${API_BASE}${path}`);
+    request.responseType = "json";
+    request.setRequestHeader("Content-Type", "application/json");
+
+    request.onload = () => {
+      const responseBody = request.response || null;
+
+      if (request.status >= 200 && request.status < 300) {
+        resolve(responseBody as T);
+        return;
+      }
+
+      const detail = typeof responseBody === "object" && responseBody && "detail" in responseBody
+        ? String((responseBody as { detail?: string }).detail || "Request failed")
+        : "Request failed";
+      reject(new Error(detail));
+    };
+
+    request.onerror = () => {
+      reject(new Error("Network error"));
+    };
+
+    request.send(body ? JSON.stringify(body) : null);
+  });
+}
+
+function normalizeScannerPayload(raw: string): string {
+  return raw
+    .replace(ANSI_ESCAPE_PATTERN, "")
+    .replace(DISALLOWED_CONTROL_PATTERN, "")
+    .replace(/\r/g, "")
+    .trim();
+}
+
 export function App() {
   const [slots, setSlots] = useState<Slot[]>([]);
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null);
@@ -90,15 +132,91 @@ export function App() {
   const [scanHistory, setScanHistory] = useState<ScanHistoryRow[]>([]);
   const [missionHistory, setMissionHistory] = useState<MissionHistoryRow[]>([]);
   const [removalHistory, setRemovalHistory] = useState<RemovalHistoryRow[]>([]);
-  const [showRobotConfig, setShowRobotConfig] = useState(false);
+  const [activeTab, setActiveTab] = useState<KioskTab>("operation");
   const [robotIp, setRobotIp] = useState("");
   const [robotApiUrl, setRobotApiUrl] = useState("");
   const [configBusy, setConfigBusy] = useState(false);
-  const [scanRaw, setScanRaw] = useState("");
-  const [scanOutRaw, setScanOutRaw] = useState("");
+  const [scanBuffer, setScanBuffer] = useState("");
   const [message, setMessage] = useState("Ready");
   const [busy, setBusy] = useState(false);
-  const scanInputRef = useRef<HTMLInputElement | null>(null);
+  const scanInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const scanOutInputRef = useRef<HTMLInputElement | null>(null);
+  const selectedSlotRef = useRef<number | null>(null);
+  const activeTabRef = useRef<KioskTab>("operation");
+  const scanBufferRef = useRef("");
+  const busyRef = useRef(false);
+  const autoSendTimerRef = useRef<number | null>(null);
+
+  const focusScanInput = () => {
+    window.requestAnimationFrame(() => {
+      scanInputRef.current?.focus();
+    });
+  };
+
+  const onClearScanBuffer = () => {
+    if (autoSendTimerRef.current !== null) {
+      window.clearTimeout(autoSendTimerRef.current);
+      autoSendTimerRef.current = null;
+    }
+    scanBufferRef.current = "";
+    setScanBuffer("");
+    focusScanInput();
+  };
+
+  const appendToScanTextarea = (chunk: string) => {
+    scanBufferRef.current = `${scanBufferRef.current}${chunk}`;
+    setScanBuffer(scanBufferRef.current);
+  };
+
+  const submitScanPayload = async (slotId: number, qrRaw: string) => {
+    setBusy(true);
+    busyRef.current = true;
+    try {
+      const result = await ajax<{ item_id: string; station_code: string }>(`/api/slots/${slotId}/scan`, "POST", {
+        qr_raw: qrRaw,
+      });
+      scanBufferRef.current = "";
+      setScanBuffer("");
+      await Promise.all([reloadSlots(), reloadItems(slotId)]);
+      setMessage(`Added ${result.item_id} (${result.station_code})`);
+      focusScanInput();
+    } catch (error) {
+      setMessage((error as Error).message);
+    } finally {
+      setBusy(false);
+      busyRef.current = false;
+    }
+  };
+
+  const scheduleAutoSend = () => {
+    if (autoSendTimerRef.current !== null) {
+      window.clearTimeout(autoSendTimerRef.current);
+    }
+
+    autoSendTimerRef.current = window.setTimeout(() => {
+      autoSendTimerRef.current = null;
+
+      if (busyRef.current) {
+        return;
+      }
+
+      const slotId = selectedSlotRef.current;
+      const qrRaw = normalizeScannerPayload(scanBufferRef.current);
+      if (!slotId || !qrRaw) {
+        return;
+      }
+
+      void submitScanPayload(slotId, qrRaw);
+    }, AUTO_SEND_IDLE_MS);
+  };
+
+  const preventNativeScannerTextareaBehavior = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    event.preventDefault();
+  };
+
+  const preventNativeScannerPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    event.preventDefault();
+  };
 
   const selectedData = useMemo(
     () => slots.find((slot) => slot.id === selectedSlot) || null,
@@ -133,46 +251,49 @@ export function App() {
   };
 
   const onSelectSlot = async (slotId: number) => {
+    const previousSelectedSlot = selectedSlot;
     setBusy(true);
+    busyRef.current = true;
+    if (autoSendTimerRef.current !== null) {
+      window.clearTimeout(autoSendTimerRef.current);
+      autoSendTimerRef.current = null;
+    }
+    setSelectedSlot(slotId);
+    selectedSlotRef.current = slotId;
+    setMessage(`Slot ${slotId} selected`);
     try {
       await api(`/api/slots/${slotId}/select`, { method: "POST" });
-      setSelectedSlot(slotId);
       await Promise.all([reloadSlots(), reloadItems(slotId)]);
-      setMessage(`Slot ${slotId} selected`);
-      scanInputRef.current?.focus();
+      focusScanInput();
     } catch (error) {
+      setSelectedSlot(previousSelectedSlot);
+      selectedSlotRef.current = previousSelectedSlot;
       setMessage((error as Error).message);
     } finally {
       setBusy(false);
+      busyRef.current = false;
     }
   };
 
-  const onScanSubmit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!selectedSlot) {
+  const onScanSubmit = async () => {
+    const slotId = selectedSlotRef.current;
+    if (!slotId) {
       setMessage("Select slot first");
       return;
     }
 
-    if (!scanRaw.trim()) {
+    const qrRaw = normalizeScannerPayload(scanBufferRef.current);
+    if (!qrRaw) {
+      setMessage("Scan data is empty");
       return;
     }
 
-    setBusy(true);
-    try {
-      const result = await api<{ item_id: string; station_code: string }>(`/api/slots/${selectedSlot}/scan`, {
-        method: "POST",
-        body: JSON.stringify({ qr_raw: scanRaw.trim() }),
-      });
-      setScanRaw("");
-      await Promise.all([reloadSlots(), reloadItems(selectedSlot)]);
-      setMessage(`Added ${result.item_id} (${result.station_code})`);
-      scanInputRef.current?.focus();
-    } catch (error) {
-      setMessage((error as Error).message);
-    } finally {
-      setBusy(false);
+    if (autoSendTimerRef.current !== null) {
+      window.clearTimeout(autoSendTimerRef.current);
+      autoSendTimerRef.current = null;
     }
+
+    await submitScanPayload(slotId, qrRaw);
   };
 
   const onDelete = async (scanId: number) => {
@@ -180,6 +301,7 @@ export function App() {
       return;
     }
     setBusy(true);
+    busyRef.current = true;
     try {
       await api(`/api/slots/${selectedSlot}/items/${scanId}`, { method: "DELETE" });
       await Promise.all([reloadSlots(), reloadItems(selectedSlot)]);
@@ -188,6 +310,7 @@ export function App() {
       setMessage((error as Error).message);
     } finally {
       setBusy(false);
+      busyRef.current = false;
     }
   };
 
@@ -196,6 +319,7 @@ export function App() {
       return;
     }
     setBusy(true);
+    busyRef.current = true;
     try {
       const result = await api<{ mission_id: number; station_code: string }>(`/api/slots/${selectedSlot}/start-mission`, {
         method: "POST",
@@ -206,34 +330,39 @@ export function App() {
       setMessage((error as Error).message);
     } finally {
       setBusy(false);
+      busyRef.current = false;
     }
   };
 
-  const onScanOutSubmit = async (event: FormEvent) => {
-    event.preventDefault();
+  const onScanOutSubmit = async () => {
     if (!selectedSlot) {
       setMessage("Select slot first");
       return;
     }
 
-    if (!scanOutRaw.trim()) {
+    const qrRaw = scanOutInputRef.current?.value.trim() || "";
+    if (!qrRaw) {
+      setMessage("Scan out data is empty");
       return;
     }
 
     setBusy(true);
+    busyRef.current = true;
     try {
-      const result = await api<{ message: string }>(`/api/slots/${selectedSlot}/scan-out`, {
-        method: "POST",
-        body: JSON.stringify({ qr_raw: scanOutRaw.trim() }),
+      const result = await ajax<{ message: string }>(`/api/slots/${selectedSlot}/scan-out`, "POST", {
+        qr_raw: qrRaw,
       });
-      setScanOutRaw("");
+      if (scanOutInputRef.current) {
+        scanOutInputRef.current.value = "";
+      }
       await Promise.all([reloadSlots(), reloadItems(selectedSlot), reloadHistory()]);
       setMessage(`Removed ${result.message.replace("removed:", "")}`);
-      scanInputRef.current?.focus();
+      focusScanInput();
     } catch (error) {
       setMessage((error as Error).message);
     } finally {
       setBusy(false);
+      busyRef.current = false;
     }
   };
 
@@ -242,15 +371,16 @@ export function App() {
       return;
     }
     setBusy(true);
+    busyRef.current = true;
     try {
       await api(`/api/slots/${selectedSlot}/reopen`, { method: "POST" });
       await Promise.all([reloadSlots(), reloadItems(selectedSlot)]);
       setMessage(`Slot ${selectedSlot} reopened`);
-      scanInputRef.current?.focus();
     } catch (error) {
       setMessage((error as Error).message);
     } finally {
       setBusy(false);
+      busyRef.current = false;
     }
   };
 
@@ -261,31 +391,37 @@ export function App() {
     }
 
     setBusy(true);
+    busyRef.current = true;
     try {
       const result = await api<RelayOpenResult>(`/api/slots/${selectedSlot}/open`, { method: "POST" });
       setSelectedSlot(result.slot_id);
+      selectedSlotRef.current = result.slot_id;
       await Promise.all([reloadSlots(), reloadItems(result.slot_id)]);
       setMessage(`Slot ${result.slot_id} opened (${result.relay_result})`);
-      scanInputRef.current?.focus();
+      focusScanInput();
     } catch (error) {
       setMessage((error as Error).message);
     } finally {
       setBusy(false);
+      busyRef.current = false;
     }
   };
 
   const onOpenEmptySlot = async () => {
     setBusy(true);
+    busyRef.current = true;
     try {
       const result = await api<RelayOpenResult>(`/api/slots/open-empty`, { method: "POST" });
       setSelectedSlot(result.slot_id);
+      selectedSlotRef.current = result.slot_id;
       await Promise.all([reloadSlots(), reloadItems(result.slot_id)]);
       setMessage(`Opened empty slot ${result.slot_id} (${result.relay_result})`);
-      scanInputRef.current?.focus();
+      focusScanInput();
     } catch (error) {
       setMessage((error as Error).message);
     } finally {
       setBusy(false);
+      busyRef.current = false;
     }
   };
 
@@ -302,7 +438,6 @@ export function App() {
       setRobotIp(saved.robot_ip || "");
       setRobotApiUrl(saved.robot_api_url || "");
       setMessage("Robot configuration saved");
-      setShowRobotConfig(false);
     } catch (error) {
       setMessage((error as Error).message);
     } finally {
@@ -315,63 +450,122 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    selectedSlotRef.current = selectedSlot;
+  }, [selectedSlot]);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
+
+  useEffect(() => {
     if (selectedSlot) {
       reloadItems(selectedSlot).catch((error) => setMessage((error as Error).message));
-      scanInputRef.current?.focus();
+      if (activeTab === "operation" && !busy) {
+        focusScanInput();
+      }
     } else {
       setItems([]);
     }
-  }, [selectedSlot]);
+  }, [selectedSlot, activeTab]);
+
+  useEffect(() => {
+    const handleWindowKeyDown = (event: KeyboardEvent) => {
+      if (activeTabRef.current !== "operation") {
+        return;
+      }
+
+      if (selectedSlotRef.current == null) {
+        return;
+      }
+
+      if (document.activeElement === scanOutInputRef.current) {
+        return;
+      }
+
+      if (busyRef.current) {
+        return;
+      }
+
+      if (event.ctrlKey || event.metaKey || event.altKey) {
+        return;
+      }
+
+      const isPrintable = event.key.length === 1;
+      const isBackspace = event.key === "Backspace";
+      const isLineBreak = event.key === "Enter";
+      const isFocusMover = event.key === "Tab";
+
+      if (!isPrintable && !isBackspace && !isLineBreak && !isFocusMover) {
+        return;
+      }
+
+      if (isPrintable) {
+        appendToScanTextarea(event.key);
+      }
+
+      if (isBackspace) {
+        scanBufferRef.current = scanBufferRef.current.slice(0, -1);
+        setScanBuffer(scanBufferRef.current);
+      }
+
+      if (isLineBreak) {
+        appendToScanTextarea("\n");
+      }
+
+      if (isFocusMover) {
+        appendToScanTextarea("\t");
+      }
+
+      scheduleAutoSend();
+
+      event.preventDefault();
+      event.stopPropagation();
+      focusScanInput();
+    };
+
+    window.addEventListener("keydown", handleWindowKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", handleWindowKeyDown, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (autoSendTimerRef.current !== null) {
+        window.clearTimeout(autoSendTimerRef.current);
+      }
+    };
+  }, []);
 
   return (
     <div className="app">
       <header>
-        <div className="header-main">
-          <div>
-            <h1>Med Slot Control</h1>
-            <p>Choose slot first, scan bottle one-by-one, then press Start Mission.</p>
+        <div className="header-top">
+          <h1>Med Slot Control</h1>
+          <div className="kiosk-tabs" role="tablist" aria-label="Main tabs">
+            <button tabIndex={-1} className={`tab-button ${activeTab === "operation" ? "active" : ""}`} onClick={() => setActiveTab("operation")}>Operation</button>
+            <button tabIndex={-1} className={`tab-button ${activeTab === "history" ? "active" : ""}`} onClick={() => setActiveTab("history")}>History</button>
+            <button tabIndex={-1} className={`tab-button ${activeTab === "settings" ? "active" : ""}`} onClick={() => setActiveTab("settings")}>Settings</button>
           </div>
-          <button className="header-config-button" onClick={() => setShowRobotConfig((prev) => !prev)} disabled={busy || configBusy}>
-            Config Robot IP/API
-          </button>
         </div>
 
-        {showRobotConfig && (
-          <div className="robot-config-panel">
-            <h3>Robot Configuration</h3>
-            <div className="robot-config-form">
-              <label>
-                Robot IP
-                <input
-                  value={robotIp}
-                  onChange={(event) => setRobotIp(event.target.value)}
-                  placeholder="ex: 192.168.1.50"
-                  disabled={configBusy}
-                />
-              </label>
-              <label>
-                Robot API URL
-                <input
-                  value={robotApiUrl}
-                  onChange={(event) => setRobotApiUrl(event.target.value)}
-                  placeholder="ex: http://192.168.1.50:8080/mission"
-                  disabled={configBusy}
-                />
-              </label>
-            </div>
-            <div className="actions">
-              <button onClick={onSaveRobotConfig} disabled={configBusy}>Save Config</button>
-              <button onClick={() => setShowRobotConfig(false)} disabled={configBusy}>Close</button>
-            </div>
-          </div>
-        )}
+        <p>Kiosk mode: choose a tab, then run tasks with large touch-friendly controls.</p>
+
+        <p className="status">{message}</p>
       </header>
 
+      <section className="tab-content">
+      {activeTab === "operation" && (
       <section className="work-area">
         <div className="slots">
           {slots.map((slot) => (
             <button
               key={slot.id}
+              tabIndex={-1}
               className={`slot ${slot.id === selectedSlot ? "active" : ""}`}
               disabled={busy}
               onClick={() => onSelectSlot(slot.id)}
@@ -385,46 +579,51 @@ export function App() {
         </div>
 
         <div className="work-side">
-          <div className="panel-left scanner-card">
+          <div className="panel-left scanner-card" onClick={focusScanInput}>
             <h2>Scanner Input</h2>
+            <p className="scanner-help">1. Select slot 2. Click scanner box once 3. Scan 4. Press Send To Slot</p>
             <div className="actions top-actions">
-              <button onClick={onOpenEmptySlot} disabled={busy}>
+              <button tabIndex={-1} onClick={onOpenEmptySlot} disabled={busy}>
                 Open Empty Slot
               </button>
-              <button onClick={onOpenSelectedSlot} disabled={!selectedSlot || busy}>
+              <button tabIndex={-1} onClick={onOpenSelectedSlot} disabled={!selectedSlot || busy}>
                 Open Selected Slot
               </button>
             </div>
-            <form onSubmit={onScanSubmit}>
-              <input
+            <div className="scanner-box">
+              <textarea
                 ref={scanInputRef}
-                value={scanRaw}
-                onChange={(event) => setScanRaw(event.target.value)}
-                placeholder="Focus here and scan QR by USB scanner"
+                rows={3}
+                value={scanBuffer}
+                readOnly
+                onKeyDown={preventNativeScannerTextareaBehavior}
+                onPaste={preventNativeScannerPaste}
+                placeholder="Select slot, click here once, then scan QR. Review the text and press Send To Slot."
                 disabled={!selectedSlot || busy}
               />
-              <button type="submit" disabled={!selectedSlot || busy}>Scan Into Slot</button>
-            </form>
+            </div>
+            <div className="actions scanner-buffer-actions">
+              <button tabIndex={-1} type="button" onClick={onScanSubmit} disabled={!selectedSlot || busy}>Send To Slot</button>
+              <button tabIndex={-1} type="button" onClick={onClearScanBuffer} disabled={!selectedSlot || busy}>Clear</button>
+            </div>
 
-            <form onSubmit={onScanOutSubmit}>
+            <div className="scan-out-row">
               <input
-                value={scanOutRaw}
-                onChange={(event) => setScanOutRaw(event.target.value)}
+                ref={scanOutInputRef}
                 placeholder="Scan QR to remove item from selected slot"
                 disabled={!selectedSlot || busy}
               />
-              <button type="submit" disabled={!selectedSlot || busy}>Scan Out From Slot</button>
-            </form>
+              <button tabIndex={-1} type="button" onClick={onScanOutSubmit} disabled={!selectedSlot || busy}>Scan Out From Slot</button>
+            </div>
 
             <div className="actions">
-              <button onClick={onStartMission} disabled={!selectedSlot || busy || items.length === 0}>
+              <button tabIndex={-1} onClick={onStartMission} disabled={!selectedSlot || busy || items.length === 0}>
                 Start Mission
               </button>
-              <button onClick={onReopen} disabled={!selectedSlot || busy}>
+              <button tabIndex={-1} onClick={onReopen} disabled={!selectedSlot || busy}>
                 Reopen Slot
               </button>
             </div>
-            <p className="status">{message}</p>
           </div>
 
           <div className="panel-right items-card">
@@ -435,7 +634,7 @@ export function App() {
                   <div>
                     <strong>{item.item_id}</strong> {item.drug_code} HN:{item.hn} Bed:{item.bed_no || "-"}
                   </div>
-                  <button disabled={busy} onClick={() => onDelete(item.id)}>
+                  <button tabIndex={-1} disabled={busy} onClick={() => onDelete(item.id)}>
                     Remove
                   </button>
                 </li>
@@ -445,12 +644,14 @@ export function App() {
           </div>
         </div>
       </section>
+      )}
 
+      {activeTab === "history" && (
       <section className="history-panel">
         <div className="history-header">
           <h2>History And Export</h2>
           <div className="actions">
-            <button disabled={busy} onClick={() => reloadHistory().catch((error) => setMessage((error as Error).message))}>
+            <button tabIndex={-1} disabled={busy} onClick={() => reloadHistory().catch((error) => setMessage((error as Error).message))}>
               Refresh History
             </button>
             <a className="link-button" href={`${API_BASE}/api/history/export/scans.csv`} target="_blank" rel="noreferrer">
@@ -553,6 +754,51 @@ export function App() {
             </div>
           </div>
         </div>
+
+      </section>
+      )}
+
+      {activeTab === "settings" && (
+      <section className="settings-panel">
+        <div className="panel-left">
+          <h2>Robot Configuration</h2>
+          <div className="robot-config-form">
+            <label>
+              Robot IP
+              <input
+                value={robotIp}
+                onChange={(event) => setRobotIp(event.target.value)}
+                placeholder="ex: 192.168.1.50"
+                disabled={configBusy}
+              />
+            </label>
+            <label>
+              Robot API URL
+              <input
+                value={robotApiUrl}
+                onChange={(event) => setRobotApiUrl(event.target.value)}
+                placeholder="ex: http://192.168.1.50:8080/mission"
+                disabled={configBusy}
+              />
+            </label>
+          </div>
+          <div className="actions">
+            <button tabIndex={-1} onClick={onSaveRobotConfig} disabled={configBusy}>Save Config</button>
+            <button tabIndex={-1} onClick={() => reloadRobotConfig().catch((error) => setMessage((error as Error).message))} disabled={configBusy}>Reload</button>
+          </div>
+        </div>
+
+        <div className="panel-right">
+          <h2>Kiosk Quick Actions</h2>
+          <div className="actions">
+            <button tabIndex={-1} onClick={() => setActiveTab("operation")}>Go To Operation</button>
+            <button tabIndex={-1} onClick={() => setActiveTab("history")}>Go To History</button>
+          </div>
+          <p>Current API Base: {API_BASE || "/"}</p>
+          <p>Selected Slot: {selectedSlot ?? "-"}</p>
+        </div>
+      </section>
+      )}
       </section>
     </div>
   );
