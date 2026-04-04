@@ -152,16 +152,31 @@ Behavior:
 
 ## Relay and Robot Integration
 
-- Relay command uses env `RELAY_API_URL`.
-- Backend sends `POST {RELAY_API_URL}` with payload:
+Backend now supports direct Linux GPIO relay control for opening each slot.
 
-```json
-{
-	"slot_id": 1,
-	"action": "open"
-}
-```
+Default relay mode is `gpio` with this fixed slot mapping:
 
-- If `RELAY_API_URL` is empty, backend returns `relay_result=simulated` for development.
-- Robot mission dispatch uses env `ROBOT_API_URL` in `start-mission` endpoint.
-- Fixed Slot/Channel/GPIO mapping is documented in `hardware/README.md`.
+| Slot | GPIO |
+|---:|---:|
+| 1 | 7 |
+| 2 | 12 |
+| 3 | 16 |
+| 4 | 20 |
+| 5 | 23 |
+| 6 | 24 |
+| 7 | 25 |
+| 8 | 8 |
+
+Relevant backend env vars:
+
+- `RELAY_MODE=gpio` to pulse local GPIO directly.
+- `GPIO_CHIP=/dev/gpiochip0` for the Linux gpiochip device.
+- `RELAY_PULSE_MS=500` for relay pulse duration.
+- `RELAY_ACTIVE_LOW=true` for relay boards where `LOW` triggers the relay and `HIGH` is idle.
+- `RELAY_API_URL=` remains available only when `RELAY_MODE=http` or `RELAY_MODE=auto`.
+
+Docker backend mounts the gpiochip device directly into the container. On development machines without GPIO hardware, relay open returns `simulated` instead of failing the whole API.
+
+Robot mission dispatch still uses env `ROBOT_API_URL` in `start-mission`.
+
+Full hardware notes are in `hardware/README.md`.

@@ -12,11 +12,11 @@ from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
 from .models import BottleScan, Mission, RelayLog, RemovalLog, Slot, SlotBatch
+from .relay import initialize_gpio_relay, send_relay_close, send_relay_open, shutdown_gpio_relay
 from .schemas import MessageResponse, MissionResponse, RelayOpenResponse, RobotConfig, ScanRequest, SlotSelectResponse, SlotView
 from .services import parse_qr
 
 ROBOT_API_URL = os.getenv("ROBOT_API_URL", "")
-RELAY_API_URL = os.getenv("RELAY_API_URL", "")
 ROBOT_IP = os.getenv("ROBOT_IP", "")
 
 app = FastAPI(title="Med Bottle Slot API", version="0.1.0")
@@ -38,20 +38,6 @@ def ensure_default_slots(db: Session) -> None:
         if i not in ids:
             db.add(Slot(id=i, status="empty", station_code=None, current_batch_id=None))
     db.commit()
-
-
-def send_relay_open(slot_id: int) -> tuple[str, str | None]:
-    if not RELAY_API_URL:
-        return "simulated", "RELAY_API_URL not configured"
-
-    payload = {"slot_id": slot_id, "action": "open"}
-    try:
-        with httpx.Client(timeout=5.0) as client:
-            response = client.post(RELAY_API_URL, json=payload)
-            response.raise_for_status()
-        return "ok", None
-    except Exception as exc:
-        return "failed", str(exc)
 
 
 def set_empty_if_batch_has_no_items(slot: Slot, batch: SlotBatch | None, db: Session) -> None:
@@ -95,8 +81,17 @@ def startup_event():
     Base.metadata.create_all(bind=engine)
     app.state.robot_ip = ROBOT_IP
     app.state.robot_api_url = ROBOT_API_URL
+    try:
+        initialize_gpio_relay()
+    except Exception:
+        pass
     with next(get_db()) as db:
         ensure_default_slots(db)
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    shutdown_gpio_relay()
 
 
 @app.get("/health")
@@ -168,6 +163,8 @@ def select_slot(slot_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Slot not found")
 
     batch = ensure_active_batch(slot, db)
+    relay_result, detail = send_relay_open(slot.id)
+    db.add(RelayLog(slot_id=slot.id, action="open", result=relay_result, detail=detail))
     db.commit()
     db.refresh(batch)
 
@@ -203,6 +200,19 @@ def open_empty_slot(db: Session = Depends(get_db)):
     db.commit()
     db.refresh(batch)
     return RelayOpenResponse(slot_id=slot.id, status=batch.status, relay_result=relay_result)
+
+
+@app.post("/api/slots/{slot_id}/close", response_model=RelayOpenResponse)
+def close_slot(slot_id: int, db: Session = Depends(get_db)):
+    slot = db.get(Slot, slot_id)
+    if not slot:
+        raise HTTPException(status_code=404, detail="Slot not found")
+
+    relay_result, detail = send_relay_close(slot.id)
+    db.add(RelayLog(slot_id=slot.id, action="close", result=relay_result, detail=detail))
+    db.commit()
+
+    return RelayOpenResponse(slot_id=slot.id, status=slot.status, relay_result=relay_result)
 
 
 @app.post("/api/slots/{slot_id}/scan")

@@ -15,7 +15,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    restart: always
+    restart: unless-stopped
 
   pgadmin:
     image: dpage/pgadmin4:8
@@ -31,23 +31,39 @@ services:
       - pgadmin_data:/var/lib/pgadmin
     ports:
       - "5050:80"
-    restart: always
+    restart: unless-stopped
 
   backend:
     build:
       context: ./backend
+    privileged: true
     container_name: medbox-backend
     depends_on:
       db:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-medbox}:${POSTGRES_PASSWORD:-medbox123}@db:5432/${POSTGRES_DB:-medbox}
+      RELAY_MODE: ${RELAY_MODE:-gpio}
+      GPIO_CHIP: ${GPIO_CHIP:-/dev/gpiochip0}
+      RELAY_PULSE_MS: ${RELAY_PULSE_MS:-2000}
+      RELAY_MIN_GAP_MS: ${RELAY_MIN_GAP_MS:-2500}
+      RELAY_ACTIVE_LOW: ${RELAY_ACTIVE_LOW:-true}
+      RELAY_IDLE_INPUT: ${RELAY_IDLE_INPUT:-true}
       RELAY_API_URL: ${RELAY_API_URL:-}
       ROBOT_API_URL: ${ROBOT_API_URL:-}
       ROBOT_IP: ${ROBOT_IP:-}
+    devices:
+      - ${GPIO_CHIP:-/dev/gpiochip0}:${GPIO_CHIP:-/dev/gpiochip0}
+      - /dev/gpiochip1:/dev/gpiochip1
+      - /dev/gpiochip4:/dev/gpiochip4
+      - /dev/gpiomem:/dev/gpiomem
+    volumes:
+      - /usr/local/bin/raspi-gpio:/usr/local/bin/raspi-gpio:ro
+      - /usr/bin/pinctrl:/usr/bin/pinctrl:ro
+      - /lib/aarch64-linux-gnu/libgpiolib.so.0:/lib/aarch64-linux-gnu/libgpiolib.so.0:ro
     ports:
       - "8000:8000"
-    restart: always
+    restart: unless-stopped
 
   frontend:
     build:
@@ -59,7 +75,7 @@ services:
       - backend
     ports:
       - "5173:80"
-    restart: always
+    restart: unless-stopped
 
 volumes:
   postgres_data:

@@ -63,7 +63,7 @@ type RobotConfig = {
   robot_api_url: string | null;
 };
 
-type KioskTab = "operation" | "history" | "settings";
+type AppTab = "operation" | "history" | "settings";
 
 const RAW_API_BASE = import.meta.env.VITE_API_BASE || "";
 const API_BASE = RAW_API_BASE.endsWith("/") ? RAW_API_BASE.slice(0, -1) : RAW_API_BASE;
@@ -80,9 +80,26 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
 
+  const contentType = response.headers.get("content-type") || "";
+  const isJson = contentType.includes("application/json");
+
   if (!response.ok) {
-    const body = await response.json().catch(() => ({ detail: "Request failed" }));
-    throw new Error(body.detail || "Request failed");
+    if (isJson) {
+      const body = await response.json().catch(() => ({ detail: "Request failed" }));
+      throw new Error(body.detail || "Request failed");
+    }
+
+    const bodyText = await response.text().catch(() => "");
+    const hasHtmlBody = /^\s*<!doctype html>/i.test(bodyText);
+    if (hasHtmlBody) {
+      throw new Error("API endpoint returned HTML. Check backend URL/proxy settings.");
+    }
+
+    throw new Error(`Request failed (${response.status})`);
+  }
+
+  if (!isJson) {
+    throw new Error("API response is not JSON. Check backend URL/proxy settings.");
   }
 
   return response.json();
@@ -96,9 +113,15 @@ function ajax<T>(path: string, method: string, body?: unknown): Promise<T> {
     request.setRequestHeader("Content-Type", "application/json");
 
     request.onload = () => {
-      const responseBody = request.response || null;
+      const contentType = request.getResponseHeader("content-type") || "";
+      const isJson = contentType.includes("application/json");
+      const responseBody = isJson ? request.response : null;
 
       if (request.status >= 200 && request.status < 300) {
+        if (!isJson) {
+          reject(new Error("API response is not JSON. Check backend URL/proxy settings."));
+          return;
+        }
         resolve(responseBody as T);
         return;
       }
@@ -132,7 +155,7 @@ export function App() {
   const [scanHistory, setScanHistory] = useState<ScanHistoryRow[]>([]);
   const [missionHistory, setMissionHistory] = useState<MissionHistoryRow[]>([]);
   const [removalHistory, setRemovalHistory] = useState<RemovalHistoryRow[]>([]);
-  const [activeTab, setActiveTab] = useState<KioskTab>("operation");
+  const [activeTab, setActiveTab] = useState<AppTab>("operation");
   const [robotIp, setRobotIp] = useState("");
   const [robotApiUrl, setRobotApiUrl] = useState("");
   const [configBusy, setConfigBusy] = useState(false);
@@ -142,14 +165,28 @@ export function App() {
   const scanInputRef = useRef<HTMLTextAreaElement | null>(null);
   const scanOutInputRef = useRef<HTMLInputElement | null>(null);
   const selectedSlotRef = useRef<number | null>(null);
-  const activeTabRef = useRef<KioskTab>("operation");
+  const activeTabRef = useRef<AppTab>("operation");
   const scanBufferRef = useRef("");
   const busyRef = useRef(false);
   const autoSendTimerRef = useRef<number | null>(null);
 
-  const focusScanInput = () => {
+  const focusScanInput = (attempt = 0) => {
     window.requestAnimationFrame(() => {
-      scanInputRef.current?.focus();
+      const input = scanInputRef.current;
+      if (!input) {
+        return;
+      }
+
+      if (input.disabled) {
+        if (attempt < 8) {
+          window.setTimeout(() => focusScanInput(attempt + 1), 40);
+        }
+        return;
+      }
+
+      input.focus({ preventScroll: true });
+      const end = input.value.length;
+      input.setSelectionRange(end, end);
     });
   };
 
@@ -222,6 +259,7 @@ export function App() {
     () => slots.find((slot) => slot.id === selectedSlot) || null,
     [slots, selectedSlot]
   );
+  const currentTab: AppTab = activeTab;
 
   const reloadSlots = async () => {
     const data = await api<Slot[]>("/api/slots");
@@ -264,6 +302,7 @@ export function App() {
     try {
       await api(`/api/slots/${slotId}/select`, { method: "POST" });
       await Promise.all([reloadSlots(), reloadItems(slotId)]);
+      setMessage(`Slot ${slotId} selected`);
       focusScanInput();
     } catch (error) {
       setSelectedSlot(previousSelectedSlot);
@@ -454,8 +493,8 @@ export function App() {
   }, [selectedSlot]);
 
   useEffect(() => {
-    activeTabRef.current = activeTab;
-  }, [activeTab]);
+    activeTabRef.current = currentTab;
+  }, [currentTab]);
 
   useEffect(() => {
     busyRef.current = busy;
@@ -464,13 +503,13 @@ export function App() {
   useEffect(() => {
     if (selectedSlot) {
       reloadItems(selectedSlot).catch((error) => setMessage((error as Error).message));
-      if (activeTab === "operation" && !busy) {
+      if (currentTab === "operation" && !busy) {
         focusScanInput();
       }
     } else {
       setItems([]);
     }
-  }, [selectedSlot, activeTab]);
+  }, [selectedSlot, currentTab, busy]);
 
   useEffect(() => {
     const handleWindowKeyDown = (event: KeyboardEvent) => {
@@ -553,13 +592,13 @@ export function App() {
           </div>
         </div>
 
-        <p>Kiosk mode: choose a tab, then run tasks with large touch-friendly controls.</p>
+        <p>Choose a tab, then run tasks with large touch-friendly controls.</p>
 
         <p className="status">{message}</p>
       </header>
 
       <section className="tab-content">
-      {activeTab === "operation" && (
+      {currentTab === "operation" && (
       <section className="work-area">
         <div className="slots">
           {slots.map((slot) => (
@@ -646,7 +685,7 @@ export function App() {
       </section>
       )}
 
-      {activeTab === "history" && (
+      {currentTab === "history" && (
       <section className="history-panel">
         <div className="history-header">
           <h2>History And Export</h2>
@@ -758,7 +797,7 @@ export function App() {
       </section>
       )}
 
-      {activeTab === "settings" && (
+      {currentTab === "settings" && (
       <section className="settings-panel">
         <div className="panel-left">
           <h2>Robot Configuration</h2>
